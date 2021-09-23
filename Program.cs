@@ -13,6 +13,7 @@ namespace gbookdl
 	{
 		const string baseAddress = "https://books.google.se";
 		const string userAgent = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:90.0) Gecko/20100101 Firefox/90.0";
+		const string downloadTo = "downloads";
 		static HttpClient httpClient;
 
 		static async Task Main(string[] args)
@@ -43,11 +44,13 @@ namespace gbookdl
 		{
 			await Init(id);
 
+			Directory.CreateDirectory(downloadTo);
+
 			var contentUrls = await GetContentUrls(id);
 
-			Directory.CreateDirectory(id);
+			Directory.CreateDirectory(Path.Combine(downloadTo, id));
 			var index = 0;
-			foreach(var url in contentUrls) {
+			foreach(var url in contentUrls.Where(x => !string.IsNullOrWhiteSpace(x))) {
 				var resource = $"{url}&w=1280"; //Get the large version
 				var request = new HttpRequestMessage(HttpMethod.Get, resource);
 				var response = await httpClient.SendAsync(request);
@@ -71,7 +74,7 @@ namespace gbookdl
 		}
 
 		static async Task<string[]> GetContentUrls(string id) {
-			var filename = $"content-{id}.txt";
+			var filename = Path.Combine(downloadTo, $"content-{id}.txt");
 			if (File.Exists(filename))
 			{
 				using var reader = File.OpenText(filename);
