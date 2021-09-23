@@ -48,7 +48,7 @@ namespace gbookdl
 
 			var contentUrls = await GetContentUrls(id);
 
-			Directory.CreateDirectory(Path.Combine(downloadTo, id));
+			var dir = Directory.CreateDirectory(Path.Combine(downloadTo, id));
 			var index = 0;
 			foreach(var url in contentUrls.Where(x => !string.IsNullOrWhiteSpace(x))) {
 				var resource = $"{url}&w=1280"; //Get the large version
@@ -60,7 +60,7 @@ namespace gbookdl
 					var ext = contentType == "image/png" ? "png" : "jpg";
 					using(
 						Stream contentStream = await response.Content.ReadAsStreamAsync(),
-						fileStream = new FileStream($"{id}/page{index}.{ext}", FileMode.Create, FileAccess.Write, FileShare.None, 10240, true)) {
+						fileStream = new FileStream(Path.Combine(dir.FullName, $"page{index}.{ext}"), FileMode.Create, FileAccess.Write, FileShare.None, 10240, true)) {
 							await contentStream.CopyToAsync(fileStream);
 					}
 					Console.WriteLine($"Saved page {index+1} of {contentUrls.Length}");
