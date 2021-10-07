@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
+using AngleSharp;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Spectre.Console;
@@ -16,7 +17,7 @@ namespace gbookdl
 		const string userAgent = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:90.0) Gecko/20100101 Firefox/90.0";
 		const string downloadTo = "downloads";
 		static HttpClient httpClient;
-		static bool initDone = false;
+		static bool cookieSet = false;
 
 		static ProgressContext progressContext;
 		static ProgressTask initTask;
@@ -99,13 +100,14 @@ namespace gbookdl
 					downloadTask = ctx.AddTask("[green]Downloading pages[/]");
 					waitTask = ctx.AddTask("[red]Waiting a little[/]");
 
-					await Init(id);
+					var title = await Init(id);
+					AnsiConsole.MarkupLine($"Title: [yellow]{title}[/]");
 
 					Directory.CreateDirectory(downloadTo);
 
 					var contentUrls = await GetContentUrls(id);
 
-					var dir = Directory.CreateDirectory(Path.Combine(downloadTo, id));
+					var dir = Directory.CreateDirectory(Path.Combine(downloadTo, title));
 					var index = 0;
 					var urls = contentUrls.Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
 					downloadTask.Description = $"[green]Downloading {urls.Count} pages[/]";
@@ -200,7 +202,7 @@ namespace gbookdl
 			return pageDictionary.Select(x => x.Value).ToArray();
 		}
 
-		static async Task Init(string id)
+		static async Task<string> Init(string id)
 		{
 
 			initTask.StartTask();
@@ -208,44 +210,46 @@ namespace gbookdl
 
 			var resource = $"/books?id={id}&printsec=frontcover&hl=en";
 
-			//If cookie is already set, we don't need to init again
-			if (initDone)
-			{
-				//We do, however, need to change the referer
-				httpClient.DefaultRequestHeaders.Remove("Referer");
-				httpClient.DefaultRequestHeaders.Add("Referer", $"{baseAddress}/{resource}");
-				initTask.Value = 100;
-				initTask.StopTask();
-				return;
-			}
-
-
 			var request = new HttpRequestMessage(HttpMethod.Get, resource);
 			var response = await httpClient.SendAsync(request);
 
-			initTask.Value = 60;
+			initTask.Value = 50;
 
 			if (!response.IsSuccessStatusCode) {
 				AnsiConsole.MarkupLine($"[red]INIT ERROR: {(int)response.StatusCode} {response.ReasonPhrase}[/]");
 				throw new Exception("Init failed");
 			}
 
-			//Set cookies
-			var cookieHeader = response.Headers.First(x => x.Key == "Set-Cookie");
-			var cookies = cookieHeader.Value.Select(v => v.Substring(0, v.IndexOf(";")));
-			httpClient.DefaultRequestHeaders.Add("Cookie", string.Join("; ", cookies));
+			//Set cookies (only first time)
+			if (!cookieSet) {
+				var cookieHeader = response.Headers.First(x => x.Key == "Set-Cookie");
+				var cookies = cookieHeader.Value.Select(v => v.Substring(0, v.IndexOf(";")));
+				httpClient.DefaultRequestHeaders.Add("Cookie", string.Join("; ", cookies));
+				cookieSet = true;
+			}
+
+
+			initTask.Value = 70;
+
+			//Set referer
+			httpClient.DefaultRequestHeaders.Remove("Referer");
+			httpClient.DefaultRequestHeaders.Add("Referer", $"{baseAddress}/{resource}");
 
 			initTask.Value = 80;
 
-			//Add referer
-			httpClient.DefaultRequestHeaders.Add("Referer", $"{baseAddress}/{resource}");
+			//Get book title
+			var content = await response.Content.ReadAsStringAsync();
+			var context = BrowsingContext.New(Configuration.Default);
+			var document = await context.OpenAsync(req => req.Content(content));
+			var titleHeading = document.QuerySelector(".gb-volume-title");
+			var title = titleHeading?.TextContent ?? id;
 
-			initTask.Value = 90;
 
 			await Wait();
 			initTask.Value = 100;
 			initTask.StopTask();
-			initDone = true;
+
+			return title;
 		}
 
 		static async Task<Page[]> GetPageData(string id, string pid)
