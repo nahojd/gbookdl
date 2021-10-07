@@ -16,6 +16,7 @@ namespace gbookdl
 		const string userAgent = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:90.0) Gecko/20100101 Firefox/90.0";
 		const string downloadTo = "downloads";
 		static HttpClient httpClient;
+		static bool initDone = false;
 
 		static ProgressContext progressContext;
 		static ProgressTask initTask;
@@ -27,13 +28,37 @@ namespace gbookdl
 
 		static async Task Main(string[] args)
 		{
-			if (args.Length == 0) {
-				Console.WriteLine("Usage: dotnet run [id-of-book]");
+			if (args.Length == 0)
+			{
+				Console.WriteLine("Usage: dotnet run [id-of-book / file-with-ids.txt]");
 				return;
 			}
-			var id = args[0];
 
-			httpClient = new HttpClient(new HttpClientHandler {
+			InitHttpClient();
+			var ids = GetBookIds(args);
+			foreach(var id in ids) {
+				await DownloadBook(id);
+				if (id != ids.Last()) {
+					AnsiConsole.MarkupLine("[yellow]Waiting 30 secs before downloading next book...[/]");
+					await Task.Delay(TimeSpan.FromSeconds(30));
+				}
+
+			}
+
+		}
+
+		private static string[] GetBookIds(string[] args) {
+			var arg = args[0];
+			if (File.Exists(arg)) {
+				return ReadLinesFromFile(arg);
+			}
+			return new[] { arg };
+		}
+
+		private static void InitHttpClient()
+		{
+			httpClient = new HttpClient(new HttpClientHandler
+			{
 				AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
 			});
 			httpClient.BaseAddress = new Uri(baseAddress);
@@ -45,11 +70,12 @@ namespace gbookdl
 			httpClient.DefaultRequestHeaders.Add("DNT", "1");
 			httpClient.DefaultRequestHeaders.Add("Host", httpClient.BaseAddress.Host);
 			httpClient.DefaultRequestHeaders.Add("Upgrade-Insecure-Requests", "1");
-
-			await DownloadBook(id);
 		}
 
-
+		private static string[] ReadLinesFromFile(string filename) {
+			using var reader = File.OpenText(filename);
+			return reader.ReadToEnd().Split(Environment.NewLine).Select(x => x.Trim()).ToArray();
+		}
 
 		static async Task DownloadBook(string id)
 		{
@@ -82,7 +108,7 @@ namespace gbookdl
 					var dir = Directory.CreateDirectory(Path.Combine(downloadTo, id));
 					var index = 0;
 					var urls = contentUrls.Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
-					downloadTask.Description = $"Downloading {urls.Count} pages";
+					downloadTask.Description = $"[green]Downloading {urls.Count} pages[/]";
 					downloadTask.MaxValue = urls.Count;
 					downloadTask.StartTask();
 					foreach(var url in urls) {
@@ -98,7 +124,6 @@ namespace gbookdl
 								fileStream = new FileStream(Path.Combine(dir.FullName, $"page{index}.{ext}"), FileMode.Create, FileAccess.Write, FileShare.None, 10240, true)) {
 									await contentStream.CopyToAsync(fileStream);
 							}
-							//Console.WriteLine($"Saved page {index+1} of {contentUrls.Length}");
 						}
 						else {
 							AnsiConsole.MarkupLine($"[red]ERROR: {resource} ({response.StatusCode}, {response.Content.Headers.ContentType.MediaType})[/]");
@@ -118,8 +143,12 @@ namespace gbookdl
 			var filename = Path.Combine(downloadTo, $"content-{id}.txt");
 			if (File.Exists(filename))
 			{
-				using var reader = File.OpenText(filename);
-				return reader.ReadToEnd().Split(Environment.NewLine).Select(x => x.Trim()).ToArray();
+				var urls = ReadLinesFromFile(filename);
+				getUrlsTask.Value(getUrlsTask.MaxValue);
+				getUrlsTask.StopTask();
+				saveUrlsTask.Value(saveUrlsTask.MaxValue);
+				saveUrlsTask.StopTask();
+				return urls;
 			}
 
 			var pageDictionary = new Dictionary<string, string>();
@@ -127,7 +156,6 @@ namespace gbookdl
 			var firstPageData = await GetPageData(id, "PP1");
 			foreach(var page in firstPageData)
 				if (!pageDictionary.ContainsKey(page.Pid)) {
-					//Console.WriteLine($"Add {page.Pid}: {page.Src}");
 					pageDictionary.Add(page.Pid, page.Src);
 				}
 			getUrlsTask.Description = $"[green]Getting {pageDictionary.Count} page urls[/]";
@@ -145,9 +173,10 @@ namespace gbookdl
 
 				var pageData = await GetPageData(id, pid);
 				foreach (var page in pageData.Where(x => !string.IsNullOrWhiteSpace(x.Src))) {
-					//Console.WriteLine($"Add {page.Pid}: {page.Src}");
-					pageDictionary[page.Pid] = page.Src;
-					getUrlsTask.Increment(1);
+					if (string.IsNullOrWhiteSpace(pageDictionary[page.Pid])) {
+						pageDictionary[page.Pid] = page.Src;
+						getUrlsTask.Increment(1);
+					}
 				}
 				idx++;
 			}
@@ -160,23 +189,37 @@ namespace gbookdl
 			using var fileStream = File.OpenWrite(filename);
 			using var writer = new StreamWriter(fileStream);
 			foreach(var page in pageDictionary) {
-				//Console.WriteLine($"{page.Key}: {page.Value}");
 				saveUrlsTask.Increment(1);
 				writer.WriteLine(page.Value);
 			}
 			writer.Flush();
 			writer.Close();
+			saveUrlsTask.Value = pageDictionary.Count;
 			saveUrlsTask.StopTask();
 
 			return pageDictionary.Select(x => x.Value).ToArray();
 		}
 
-		static async Task Init(string id) {
+		static async Task Init(string id)
+		{
 
 			initTask.StartTask();
 			initTask.MaxValue = 100;
 
 			var resource = $"/books?id={id}&printsec=frontcover&hl=en";
+
+			//If cookie is already set, we don't need to init again
+			if (initDone)
+			{
+				//We do, however, need to change the referer
+				httpClient.DefaultRequestHeaders.Remove("Referer");
+				httpClient.DefaultRequestHeaders.Add("Referer", $"{baseAddress}/{resource}");
+				initTask.Value = 100;
+				initTask.StopTask();
+				return;
+			}
+
+
 			var request = new HttpRequestMessage(HttpMethod.Get, resource);
 			var response = await httpClient.SendAsync(request);
 
@@ -202,6 +245,7 @@ namespace gbookdl
 			await Wait();
 			initTask.Value = 100;
 			initTask.StopTask();
+			initDone = true;
 		}
 
 		static async Task<Page[]> GetPageData(string id, string pid)
