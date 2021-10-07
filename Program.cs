@@ -1,29 +1,43 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using AngleSharp;
+using CommandLine;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Spectre.Console;
 
 namespace gbookdl
 {
+	public class Options
+	{
+		[Option(Default = true, HelpText = "Create cbz file")]
+		public bool CreateCbz { get; set; }
+		[Option(Default = true, HelpText = "Remove downloaded images after creating cbz")]
+		public bool Cleanup { get; set; }
+		[Option(Default = "downloads", HelpText = "Set output directory (default: downloads)")]
+		public string Outdir { get; set; }
+	}
+
 	class Program
 	{
 		const string baseAddress = "https://books.google.se";
 		const string userAgent = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:90.0) Gecko/20100101 Firefox/90.0";
-		const string downloadTo = "downloads";
 		static HttpClient httpClient;
 		static bool cookieSet = false;
+
+		static Options options;
 
 		static ProgressContext progressContext;
 		static ProgressTask initTask;
 		static ProgressTask getUrlsTask;
 		static ProgressTask saveUrlsTask;
 		static ProgressTask downloadTask;
+		static ProgressTask zipTask;
 		static ProgressTask waitTask;
 
 
@@ -34,6 +48,11 @@ namespace gbookdl
 				Console.WriteLine("Usage: dotnet run [id-of-book / file-with-ids.txt]");
 				return;
 			}
+
+			CommandLine.Parser.Default.ParseArguments<Options>(args)
+				.WithParsed(opts => {
+					options = opts;
+				});
 
 			InitHttpClient();
 			var ids = GetBookIds(args);
@@ -49,7 +68,7 @@ namespace gbookdl
 		}
 
 		private static string[] GetBookIds(string[] args) {
-			var arg = args[0];
+			var arg = args.Last();
 			if (File.Exists(arg)) {
 				return ReadLinesFromFile(arg);
 			}
@@ -100,14 +119,18 @@ namespace gbookdl
 					downloadTask = ctx.AddTask("[green]Downloading pages[/]");
 					waitTask = ctx.AddTask("[red]Waiting a little[/]");
 
+
 					var title = await Init(id);
 					AnsiConsole.MarkupLine($"Title: [yellow]{title}[/]");
 
-					Directory.CreateDirectory(downloadTo);
+					if (options.CreateCbz)
+						zipTask = ctx.AddTask($"[green]Creating {title}.cbz[/]");
+
+					Directory.CreateDirectory(options.Outdir);
 
 					var contentUrls = await GetContentUrls(id);
 
-					var dir = Directory.CreateDirectory(Path.Combine(downloadTo, title));
+					var dir = Directory.CreateDirectory(Path.Combine(options.Outdir, title));
 					var index = 0;
 					var urls = contentUrls.Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
 					downloadTask.Description = $"[green]Downloading {urls.Count} pages[/]";
@@ -135,6 +158,20 @@ namespace gbookdl
 						await Wait();
 					}
 					downloadTask.StopTask();
+
+					if (options.CreateCbz) {
+						zipTask.StartTask();
+						ZipFile.CreateFromDirectory(dir.FullName, Path.Combine(options.Outdir, $"{title}.cbz"), CompressionLevel.Optimal, false);
+						zipTask.Value = zipTask.MaxValue;
+						zipTask.StopTask();
+
+						if (options.Cleanup) {
+							dir.Delete(true);
+							File.Delete(Path.Combine(options.Outdir, $"content-{id}.txt"));
+						}
+
+					}
+
 				});
 
 			AnsiConsole.MarkupLine("[green]Download finished[/]");
@@ -142,7 +179,7 @@ namespace gbookdl
 
 		static async Task<string[]> GetContentUrls(string id) {
 			getUrlsTask.StartTask();
-			var filename = Path.Combine(downloadTo, $"content-{id}.txt");
+			var filename = Path.Combine(options.Outdir, $"content-{id}.txt");
 			if (File.Exists(filename))
 			{
 				var urls = ReadLinesFromFile(filename);
