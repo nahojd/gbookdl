@@ -70,7 +70,7 @@ namespace gbookdl
 		private static string[] GetBookIds(string[] args) {
 			var arg = args.Last();
 			if (File.Exists(arg)) {
-				return ReadLinesFromFile(arg);
+				return ReadLinesFromFile(arg).Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
 			}
 			return new[] { arg };
 		}
@@ -155,7 +155,8 @@ namespace gbookdl
 						}
 						index++;
 						downloadTask.Increment(1);
-						await Wait();
+						if (downloadTask.Value < downloadTask.MaxValue)
+							await Wait();
 					}
 					downloadTask.StopTask();
 
